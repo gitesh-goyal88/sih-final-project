@@ -1,0 +1,29 @@
+# secrets — local/demo keys are generated, prod keys live in Vault (SEC-INF-09)
+.env
+.env.*
+!.env.example
+infra/.env
+*.pem
+*.jks
+*.keystore
+# python
+__pycache__/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+# node
+node_modules/
+.next/
+web/out/
+# android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk
+*.aab
+# os
+.DS_Store
+infra/osrm/*.osrm*

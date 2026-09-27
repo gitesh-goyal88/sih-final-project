@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SECURITY Appendix E / SEC-MOB-04: no cleartext, no user-installed CAs, SPKI pinning with a backup pin.
+     Replace the placeholder hashes with the real leaf + backup SPKI before the pilot release. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors><certificates src="system" /></trust-anchors>
+    </base-config>
+    <domain-config>
+        <domain includeSubdomains="true">api.aapatmitra.in</domain>
+        <pin-set expiration="2027-09-30">
+            <pin digest="SHA-256">AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</pin>
+            <pin digest="SHA-256">BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=</pin>
+        </pin-set>
+    </domain-config>
+</network-security-config>

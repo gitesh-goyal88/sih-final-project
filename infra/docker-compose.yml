@@ -1,0 +1,159 @@
+# AapatMitra — local / demo stack (TRD §17.1, §17.2).
+#   docker compose -f infra/docker-compose.yml --env-file infra/.env up -d --build
+# Only NGINX (8080 → the console + API) and, with the "teleconsult" profile, coturn are published —
+# every data store stays on the private network (SEC-INF-02). Dev ports for Postgres/Redis/RabbitMQ/MinIO
+# are published on 127.0.0.1 only, for tests and the seed script.
+name: aapatmitra
+
+x-backend: &backend
+  build: { context: ../backend }
+  env_file: [.env]
+  environment:
+    AM_DB_HOST: postgres
+    AM_REDIS_URL: redis://:${AM_REDIS_PASSWORD}@redis:6379/0
+    AM_AMQP_URL: amqp://am:${AM_RABBIT_PASSWORD}@rabbitmq:5672/aapatmitra
+    AM_S3_ENDPOINT: http://minio:9000
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+    rabbitmq: { condition: service_healthy }
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  networks: [app, data]
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    platform: linux/amd64
+    environment:
+      POSTGRES_DB: aapatmitra
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${AM_DB_OWNER_PASSWORD}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    command: ["postgres", "-c", "timezone=UTC", "-c", "log_min_duration_statement=500"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    ports: ["127.0.0.1:5432:5432"]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres -d aapatmitra"], interval: 5s, retries: 30 }
+    networks: [data]
+
+  redis:
+    image: redis:7-alpine
+    # database.md §15.1 R5: noeviction (never silently drop a lock), AOF everysec
+    command: ["redis-server", "--requirepass", "${AM_REDIS_PASSWORD}", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "1gb",
+              "--maxmemory-policy", "noeviction", "--protected-mode", "yes", "--bind", "0.0.0.0",
+              "--rename-command", "FLUSHALL", "", "--rename-command", "CONFIG", ""]
+    volumes: [redisdata:/data]
+    ports: ["127.0.0.1:6379:6379"]
+    healthcheck: { test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping"], interval: 5s, retries: 30 }
+    environment: { REDIS_PASSWORD: "${AM_REDIS_PASSWORD}" }
+    networks: [data]
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: am
+      RABBITMQ_DEFAULT_PASS: ${AM_RABBIT_PASSWORD}
+      RABBITMQ_DEFAULT_VHOST: aapatmitra
+    ports: ["127.0.0.1:5672:5672", "127.0.0.1:15672:15672"]
+    healthcheck: { test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"], interval: 10s, retries: 30 }
+    networks: [data]
+
+  minio:
+    image: chainguard/minio:latest   # minimal non-root MinIO build (minio/minio is no longer pullable here)
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${AM_S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${AM_S3_SECRET_KEY}
+    volumes: [miniodata:/data]
+    ports: ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
+    networks: [data]
+
+  migrate:
+    <<: *backend
+    command: ["sh", "-c", "alembic upgrade head && python scripts/seed_demo.py --if-empty"]
+    restart: "no"
+
+  api:
+    <<: *backend
+    command: ["gunicorn", "app.main:app", "-k", "uvicorn.workers.UvicornWorker", "-w", "2", "-b", "0.0.0.0:8000",
+              "--timeout", "60", "--graceful-timeout", "20"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck: { test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/api/v1/health')"],
+                   interval: 10s, retries: 30 }
+
+  # TRD §3.3 / ADR-03: the emergency queue has its OWN worker pool, prefetch 1
+  worker-emergency:
+    <<: *backend
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "emergency", "-c", "2", "--prefetch-multiplier", "1",
+              "-n", "emergency@%h", "--loglevel", "INFO"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+  worker-default:
+    <<: *backend
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "default", "-c", "2", "-n", "default@%h", "--loglevel", "INFO"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+  worker-bulk:
+    <<: *backend
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "-Q", "bulk", "-c", "1", "-n", "bulk@%h", "--loglevel", "INFO"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+  beat:
+    <<: *backend
+    command: ["celery", "-A", "app.workers.celery_app", "beat", "--loglevel", "INFO", "-s", "/tmp/celerybeat-schedule"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  web:
+    build:
+      context: ../web
+      args:
+        NEXT_PUBLIC_API_BASE: /api/v1
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [app]
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes: ["./nginx/nginx.conf:/etc/nginx/nginx.conf:ro"]
+    ports: ["8080:8080"]
+    depends_on: [api, web]
+    networks: [app]
+
+  coturn:
+    image: coturn/coturn:4.6
+    profiles: [teleconsult]
+    command: ["-c", "/etc/coturn/turnserver.conf", "--static-auth-secret=${AM_TURN_SECRET}"]
+    volumes: ["./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro"]
+    ports: ["3478:3478/udp", "3478:3478/tcp"]
+    networks: [turn]   # SF-20: its own segment, no route to the data tier
+
+  osrm:
+    image: osrm/osrm-backend:v5.25.0
+    profiles: [routing]
+    command: ["osrm-routed", "--algorithm", "mld", "/data/region.osrm"]
+    volumes: ["./osrm:/data:ro"]
+    networks: [app]
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: [monitoring]
+    volumes: ["./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    networks: [app]
+
+volumes:
+  pgdata: {}
+  redisdata: {}
+  miniodata: {}
+
+networks:
+  app: {}
+  data: {}
+  turn: {}

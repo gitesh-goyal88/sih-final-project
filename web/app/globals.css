@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* UI-UX §3.2: Noto Sans; body 15–16 px on the web console; Indic line-height 1.7 */
+html { font-size: 100%; }
+body { @apply bg-surface text-ink antialiased; line-height: 1.5; font-size: 1rem; }
+:lang(hi) body, [lang='hi'] body { line-height: 1.75; }
+
+/* FR-W03 visible focus ring for keyboard users */
+:focus-visible { outline: 3px solid #F7931E; outline-offset: 2px; }
+
+/* "Contrast" toggle in the utility strip */
+.high-contrast body { background: #fff; color: #000; }
+.high-contrast .text-ink-muted { color: #1F2937; }
+
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

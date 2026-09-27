@@ -1,0 +1,25 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "api",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "cd backend && AM_INLINE_TASKS=true uv run uvicorn app.main:app --port 8000"
+      ],
+      "port": 8000,
+      "autoPort": false
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "cd web && NEXT_PUBLIC_DEMO_HINTS=1 npm run dev"
+      ],
+      "port": 3000,
+      "autoPort": false
+    }
+  ]
+}
